@@ -125,7 +125,7 @@ class _HomePageState extends State<HomePage> {
                                                 color: Colors.green,
                                               ),
                                               onPressed: () async {
-                                                Firestore.instance
+                                                await Firestore.instance
                                                     .collection("users")
                                                     .document(widget.prefs.get("id"))
                                                       .collection("chats")

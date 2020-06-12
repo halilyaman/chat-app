@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -18,6 +20,7 @@ class ChatPage extends StatefulWidget {
 class _ChatPageState extends State<ChatPage> {
   final _key = GlobalKey<FormState>();
   String _message = "";
+  List<String> messagePool = [];
   Firestore db;
   int messageCounter = 0;
   ScrollController _controller = ScrollController();
@@ -134,87 +137,9 @@ class _ChatPageState extends State<ChatPage> {
                           if (_checkMessageContent()) {
                             _key.currentState.reset();
 
-                            String time = DateTime.now()
-                                .millisecondsSinceEpoch
-                                .toString();
+                            messagePool.add(_message);
 
-                            await db.runTransaction((transaction) =>
-                                transaction.set(
-                                    db
-                                        .collection("users")
-                                        .document(widget.prefs.get("id"))
-                                        .collection("chats")
-                                        .document(widget.peerId)
-                                        .collection("messages")
-                                        .document(time),
-                                    {
-                                      "sender": widget.prefs.get("id"),
-                                      "receiver": widget.peerId,
-                                      "sentTime": time,
-                                      "message": _message
-                                    }));
-
-                            await db
-                                .collection("users")
-                                .document(widget.prefs.get("id"))
-                                .collection("chats")
-                                .document(widget.peerId)
-                                .collection("messages")
-                                .document(time)
-                                .setData({
-                              "sender": widget.prefs.get("id"),
-                              "receiver": widget.peerId,
-                              "sentTime": time,
-                              "message": _message
-                            });
-
-                            await db
-                                .collection("users")
-                                .document(widget.peerId)
-                                .collection("chats")
-                                .document(widget.prefs.get("id"))
-                                .collection("messages")
-                                .document(time)
-                                .setData({
-                              "sender": widget.prefs.get("id"),
-                              "receiver": widget.peerId,
-                              "sentTime": time,
-                              "message": _message
-                            });
-
-                            await db
-                                .collection("users")
-                                .document(widget.peerId)
-                                .collection("chats")
-                                .document(widget.prefs.get("id"))
-                                .setData({
-                              "chattingWith": widget.prefs.get("id"),
-                              "photoUrl": widget.prefs.get("photoUrl"),
-                              "nickname": widget.prefs.get("nickname"),
-                            });
-
-                            await db
-                                .collection("users")
-                                .document(widget.prefs.get("id"))
-                                .collection("chats")
-                                .document(widget.peerId)
-                                .setData({
-                              "chattingWith": widget.peerId,
-                              "photoUrl": widget.photoUrl,
-                              "nickname": widget.nickname
-                            });
-
-                            await db
-                                .collection("messages")
-                                .document(widget.chatId)
-                                .collection(widget.chatId)
-                                .document(time)
-                                .setData({
-                              "sender": widget.prefs.get("id"),
-                              "receiver": widget.peerId,
-                              "sentTime": time,
-                              "message": _message
-                            });
+                            sendMessage();
 
                             setState(() {
                               _message = "";
@@ -232,6 +157,101 @@ class _ChatPageState extends State<ChatPage> {
             ],
           ),
         ]));
+  }
+
+  sendMessage() async {
+
+    while (messagePool.isNotEmpty) {
+
+      String message = messagePool.removeLast();
+
+      String time = DateTime
+          .now()
+          .millisecondsSinceEpoch
+          .toString();
+
+      // save message in sender's document
+      await db.runTransaction((transaction) =>
+          transaction
+              .set(
+              db
+                  .collection("users")
+                  .document(widget.prefs.get("id"))
+                  .collection("chats")
+                  .document(widget.peerId)
+                  .collection("messages")
+                  .document(time),
+              {
+                "sender": widget.prefs.get("id"),
+                "receiver": widget.peerId,
+                "sentTime": time,
+                "message": message
+              }));
+
+      // save message in receiver's document
+      await db.runTransaction((transaction) =>
+          transaction
+              .set(
+              db
+                  .collection("users")
+                  .document(widget.peerId)
+                  .collection("chats")
+                  .document(widget.prefs.get("id"))
+                  .collection("messages")
+                  .document(time),
+              {
+                "sender": widget.prefs.get("id"),
+                "receiver": widget.peerId,
+                "sentTime": time,
+                "message": message
+              }));
+
+      // notify receiver
+      await db.runTransaction((transaction) =>
+          transaction
+              .set(
+              db
+                  .collection("users")
+                  .document(widget.peerId)
+                  .collection("chats")
+                  .document(widget.prefs.get("id")),
+              {
+                "chattingWith": widget.prefs.get("id"),
+                "photoUrl": widget.prefs.get("photoUrl"),
+                "nickname": widget.prefs.get("nickname")
+              }));
+
+      // notify sender
+      await db.runTransaction((transaction) =>
+          transaction
+              .set(
+              db
+                  .collection("users")
+                  .document(widget.prefs.get("id"))
+                  .collection("chats")
+                  .document(widget.peerId),
+              {
+                "chattingWith": widget.peerId,
+                "photoUrl": widget.photoUrl,
+                "nickname": widget.nickname
+              }));
+
+      // save message permanently
+      await db.runTransaction((transaction) =>
+          transaction
+              .set(
+              db
+                  .collection("messages")
+                  .document(widget.chatId)
+                  .collection(widget.chatId)
+                  .document(time),
+              {
+                "sender": widget.prefs.get("id"),
+                "receiver": widget.peerId,
+                "sentTime": time,
+                "message": message
+              }));
+    }
   }
 
   _checkMessageContent() {
