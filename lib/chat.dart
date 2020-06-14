@@ -1,7 +1,11 @@
 import 'dart:io';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:fluttertoast/fluttertoast.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ChatPage extends StatefulWidget {
@@ -24,6 +28,9 @@ class _ChatPageState extends State<ChatPage> {
   Firestore db;
   int messageCounter = 0;
   ScrollController _controller = ScrollController();
+  File imageFile;
+  String imageUrl;
+  ImagePicker _picker = ImagePicker();
 
   @override
   void initState() {
@@ -65,6 +72,7 @@ class _ChatPageState extends State<ChatPage> {
                         .collection("chats")
                         .document(widget.peerId)
                         .collection("messages")
+                        .orderBy("sentTime", descending: true)
                         .snapshots(),
                     builder: (context, snapshot) {
                       if (!snapshot.hasData) {
@@ -76,6 +84,7 @@ class _ChatPageState extends State<ChatPage> {
                       return ListView.builder(
                         controller: _controller,
                         itemCount: snapshot.data.documents.length,
+                        reverse: true,
                         itemBuilder: (context, index) {
                           return _buildMessages(snapshot, index);
                         },
@@ -110,6 +119,10 @@ class _ChatPageState extends State<ChatPage> {
                             maxLines: null,
                             keyboardType: TextInputType.multiline,
                             decoration: InputDecoration(
+                              suffixIcon: IconButton(
+                                icon: Icon(Icons.image),
+                                onPressed: getImage,
+                              ),
                               icon: Icon(Icons.message),
                               hintText: "Type a message",
                               border: InputBorder.none,
@@ -133,22 +146,7 @@ class _ChatPageState extends State<ChatPage> {
                           color: Colors.indigoAccent),
                       child: IconButton(
                         icon: Icon(Icons.send),
-                        onPressed: () async {
-                          if (_checkMessageContent()) {
-                            _key.currentState.reset();
-
-                            messagePool.add(_message);
-
-                            sendMessage();
-
-                            setState(() {
-                              _message = "";
-                            });
-
-                            _controller
-                                .jumpTo(_controller.position.maxScrollExtent);
-                          }
-                        },
+                        onPressed: () => sendMessage(0),
                       ),
                     )
                   ],
@@ -159,21 +157,51 @@ class _ChatPageState extends State<ChatPage> {
         ]));
   }
 
-  sendMessage() async {
+  getImage() async {
+    final pickedFile = await _picker.getImage(source: ImageSource.gallery);
+    imageFile = File(pickedFile.path);
 
+    if (pickedFile != null) {
+      uploadFile();
+    }
+  }
+
+  uploadFile() async {
+    String fileName = DateTime.now().millisecondsSinceEpoch.toString();
+    StorageReference reference = FirebaseStorage.instance.ref().child(fileName);
+    StorageUploadTask uploadTask = reference.putFile(imageFile);
+    StorageTaskSnapshot storageTaskSnapshot = await uploadTask.onComplete;
+    storageTaskSnapshot.ref.getDownloadURL().then((downloadUrl) {
+      _message = downloadUrl;
+      sendMessage(1);
+    }, onError: (err) {
+      Fluttertoast.showToast(msg: "This file is not an image");
+    });
+  }
+
+  sendMessage(int type) {
+    // types: 0 = text, 1 = image
+
+    if (_checkMessageContent()) {
+      _key.currentState.reset();
+
+      messagePool.add(_message);
+      uploadMessageData(type);
+
+      setState(() {
+        _message = "";
+      });
+    }
+  }
+
+  uploadMessageData(int type) async {
     while (messagePool.isNotEmpty) {
-
       String message = messagePool.removeLast();
 
-      String time = DateTime
-          .now()
-          .millisecondsSinceEpoch
-          .toString();
+      String time = DateTime.now().millisecondsSinceEpoch.toString();
 
       // save message in sender's document
-      await db.runTransaction((transaction) =>
-          transaction
-              .set(
+      await db.runTransaction((transaction) => transaction.set(
               db
                   .collection("users")
                   .document(widget.prefs.get("id"))
@@ -185,13 +213,12 @@ class _ChatPageState extends State<ChatPage> {
                 "sender": widget.prefs.get("id"),
                 "receiver": widget.peerId,
                 "sentTime": time,
-                "message": message
+                "message": message,
+                "type": type.toString()
               }));
 
       // save message in receiver's document
-      await db.runTransaction((transaction) =>
-          transaction
-              .set(
+      await db.runTransaction((transaction) => transaction.set(
               db
                   .collection("users")
                   .document(widget.peerId)
@@ -203,13 +230,12 @@ class _ChatPageState extends State<ChatPage> {
                 "sender": widget.prefs.get("id"),
                 "receiver": widget.peerId,
                 "sentTime": time,
-                "message": message
+                "message": message,
+                "type": type.toString()
               }));
 
       // notify receiver
-      await db.runTransaction((transaction) =>
-          transaction
-              .set(
+      await db.runTransaction((transaction) => transaction.set(
               db
                   .collection("users")
                   .document(widget.peerId)
@@ -222,9 +248,7 @@ class _ChatPageState extends State<ChatPage> {
               }));
 
       // notify sender
-      await db.runTransaction((transaction) =>
-          transaction
-              .set(
+      await db.runTransaction((transaction) => transaction.set(
               db
                   .collection("users")
                   .document(widget.prefs.get("id"))
@@ -237,9 +261,7 @@ class _ChatPageState extends State<ChatPage> {
               }));
 
       // save message permanently
-      await db.runTransaction((transaction) =>
-          transaction
-              .set(
+      await db.runTransaction((transaction) => transaction.set(
               db
                   .collection("messages")
                   .document(widget.chatId)
@@ -249,7 +271,8 @@ class _ChatPageState extends State<ChatPage> {
                 "sender": widget.prefs.get("id"),
                 "receiver": widget.peerId,
                 "sentTime": time,
-                "message": message
+                "message": message,
+                "type": type.toString()
               }));
     }
   }
@@ -280,6 +303,7 @@ class _ChatPageState extends State<ChatPage> {
     String message = snapshot.data.documents[index]["message"];
     String millis = snapshot.data.documents[index]["sentTime"];
     DateTime time = DateTime.fromMillisecondsSinceEpoch(int.parse(millis));
+    int type = int.parse(snapshot.data.documents[index]["type"]);
 
     return Container(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
@@ -289,7 +313,8 @@ class _ChatPageState extends State<ChatPage> {
             constraints: BoxConstraints(
                 maxWidth: MediaQuery.of(context).size.width * (3 / 4)),
             alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-            child: MessageBox(message, time, isMe, db, widget.chatId)),
+            child: MessageBox(message, time, isMe, db, widget.chatId,
+                widget.prefs, widget.peerId, type)),
       ),
     );
   }
@@ -301,8 +326,12 @@ class MessageBox extends StatelessWidget {
   final bool isMe;
   final Firestore db;
   final String chatId;
+  final SharedPreferences prefs;
+  final String peerId;
+  final int type;
 
-  MessageBox(this.message, this.time, this.isMe, this.db, this.chatId);
+  MessageBox(this.message, this.time, this.isMe, this.db, this.chatId,
+      this.prefs, this.peerId, this.type);
 
   @override
   Widget build(BuildContext context) {
@@ -311,7 +340,7 @@ class MessageBox extends StatelessWidget {
           context: context,
           builder: (context) {
             return Dialog(
-              insetPadding: EdgeInsets.symmetric(horizontal: 120.0),
+              insetPadding: EdgeInsets.symmetric(horizontal: 50.0),
               backgroundColor: Colors.black45,
               child: Container(
                 height: 120.0,
@@ -335,40 +364,60 @@ class MessageBox extends StatelessWidget {
                       style: TextStyle(color: Colors.white),
                     ),
                     isMe
-                        ? MaterialButton(
-                            child: Text(
-                              "Delete Message",
-                              style: TextStyle(color: Colors.red),
-                            ),
-                            onPressed: () async {
-                              int time1 = time.millisecondsSinceEpoch;
-                              await db.runTransaction((transaction) async =>
-                                  await transaction.delete(db
-                                      .collection("messages")
-                                      .document(chatId)
-                                      .collection(chatId)
-                                      .document(time1.toString())));
+                        ? Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              MaterialButton(
+                                child: Text(
+                                  "Delete From Me",
+                                  style: TextStyle(color: Colors.red),
+                                ),
+                                onPressed: () async {
+                                  await db.runTransaction((transaction) async =>
+                                      await transaction.delete(db
+                                          .collection("users")
+                                          .document(prefs.get("id"))
+                                          .collection("chats")
+                                          .document(peerId)
+                                          .collection("messages")
+                                          .document(time.millisecondsSinceEpoch
+                                              .toString())));
 
-                              int time2 = time1 - 1;
-                              await db.runTransaction((transaction) async =>
-                                  await transaction.delete(db
-                                      .collection("messages")
-                                      .document(chatId)
-                                      .collection(chatId)
-                                      .document(time2.toString())));
+                                  Navigator.pop(context);
+                                },
+                              ),
+                              MaterialButton(
+                                child: Text(
+                                  "Delete From Everyone",
+                                  style: TextStyle(color: Colors.red),
+                                ),
+                                onPressed: () async {
+                                  await db.runTransaction((transaction) async =>
+                                      await transaction.delete(db
+                                          .collection("users")
+                                          .document(prefs.get("id"))
+                                          .collection("chats")
+                                          .document(peerId)
+                                          .collection("messages")
+                                          .document(time.millisecondsSinceEpoch
+                                              .toString())));
 
-                              int time3 = time1 + 1;
-                              await db.runTransaction((transaction) async =>
-                                  await transaction.delete(db
-                                      .collection("messages")
-                                      .document(chatId)
-                                      .collection(chatId)
-                                      .document(time3.toString())));
+                                  await db.runTransaction((transaction) async =>
+                                      await transaction.delete(db
+                                          .collection("users")
+                                          .document(peerId)
+                                          .collection("chats")
+                                          .document(prefs.get("id"))
+                                          .collection("messages")
+                                          .document(time.millisecondsSinceEpoch
+                                              .toString())));
 
-                              Navigator.pop(context);
-                            },
+                                  Navigator.pop(context);
+                                },
+                              )
+                            ],
                           )
-                        : Container()
+                        : Container(),
                   ],
                 ),
               ),
@@ -380,7 +429,27 @@ class MessageBox extends StatelessWidget {
             borderRadius: BorderRadius.circular(10.0)),
         child: Padding(
           padding: const EdgeInsets.all(8.0),
-          child: Text(message),
+          child: type == 0
+              ? Text(message)
+              : CachedNetworkImage(
+                  width: 200,
+                  height: 200,
+                  placeholder: (context, url) => Container(
+                    child: CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.black),
+                    ),
+                    width: 200.0,
+                    height: 200.0,
+                    padding: EdgeInsets.all(70.0),
+                    decoration: BoxDecoration(
+                      color: Colors.grey,
+                      borderRadius: BorderRadius.all(
+                        Radius.circular(8.0),
+                      ),
+                    ),
+                  ),
+                  imageUrl: message,
+                ),
         ),
       ),
     );
